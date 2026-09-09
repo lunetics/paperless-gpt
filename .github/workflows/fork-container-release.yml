@@ -1,0 +1,282 @@
+name: Fork container checks and release
+
+# Fork PRs and main pushes perform the same secret-free container checks as a
+# release. Only an exact vX.Y.Z tag can publish a tested linux/amd64 image.
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  container-checks:
+    if: github.repository == 'lunetics/paperless-gpt' && github.ref_type != 'tag'
+    name: Container checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Set build date from the checked-out commit
+        run: echo "BUILD_DATE=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
+      - name: Run frontend checks in a disposable container
+        run: docker build --target frontend-test .
+      - name: Run backend checks in a disposable container
+        run: docker build --target backend-test .
+      - name: Build the image under test
+        env:
+          TEST_IMAGE: paperless-gpt:e2e-${{ github.sha }}
+        run: |
+          docker buildx build --load --platform linux/amd64 \
+            --tag "$TEST_IMAGE" \
+            --build-arg VERSION="${GITHUB_SHA}" \
+            --build-arg COMMIT="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="$BUILD_DATE" \
+            .
+      - name: Run mock E2E against the image under test
+        env:
+          TEST_IMAGE: paperless-gpt:e2e-${{ github.sha }}
+        run: ./scripts/verify-containers.sh "$TEST_IMAGE"
+      - name: Upload mock E2E report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-report-container-${{ github.sha }}
+          path: web-app/playwright-report/
+          retention-days: 30
+          if-no-files-found: ignore
+      - name: Upload mock E2E test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-results-container-${{ github.sha }}
+          path: web-app/test-results/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  release-checks:
+    if: github.repository == 'lunetics/paperless-gpt' && github.ref_type == 'tag'
+    name: Verify stable release image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_id: ${{ steps.image-id.outputs.image_id }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Validate stable version tag
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tags must have the form vX.Y.Z; got: $VERSION" >&2
+            exit 1
+          fi
+      - name: Set release image names
+        env:
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          {
+            echo "IMAGE=ghcr.io/${REPOSITORY,,}"
+            echo "VERSION=$VERSION"
+            echo "TEST_IMAGE=paperless-gpt:e2e-${GITHUB_SHA}"
+          } >> "$GITHUB_ENV"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Set build date from the checked-out commit
+        run: echo "BUILD_DATE=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
+      - name: Run frontend checks in a disposable container
+        run: docker build --target frontend-test .
+      - name: Run backend checks in a disposable container
+        run: docker build --target backend-test .
+      - name: Build the release image once
+        env:
+          SOURCE_URL: https://github.com/${{ github.repository }}
+        run: |
+          docker buildx build --load --platform linux/amd64 \
+            --tag "$TEST_IMAGE" \
+            --label "org.opencontainers.image.source=$SOURCE_URL" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --build-arg VERSION="$VERSION" \
+            --build-arg COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$BUILD_DATE" \
+            .
+      - name: Run mock E2E against the release image
+        run: ./scripts/verify-containers.sh "$TEST_IMAGE"
+      - name: Upload mock E2E report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-report-container-${{ github.sha }}
+          path: web-app/playwright-report/
+          retention-days: 30
+          if-no-files-found: ignore
+      - name: Upload mock E2E test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-results-container-${{ github.sha }}
+          path: web-app/test-results/
+          retention-days: 30
+          if-no-files-found: ignore
+      - name: Record tested image identity
+        id: image-id
+        run: |
+          IMAGE_ID=$(docker image inspect "$TEST_IMAGE" --format '{{.Id}}')
+          echo "image_id=$IMAGE_ID" >> "$GITHUB_OUTPUT"
+      - name: Save the tested release image
+        run: docker image save "$TEST_IMAGE" --output "$RUNNER_TEMP/fork-release-image.tar"
+      - name: Upload the tested release image
+        uses: actions/upload-artifact@v6
+        with:
+          name: fork-release-image-${{ github.sha }}
+          path: ${{ runner.temp }}/fork-release-image.tar
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  publish:
+    if: github.repository == 'lunetics/paperless-gpt' && github.ref_type == 'tag'
+    name: Publish tested stable image
+    needs: release-checks
+    runs-on: ubuntu-latest
+    # Do not let an older maintenance release move latest behind a newer one.
+    concurrency:
+      group: fork-ghcr-release
+      # Retain queued stable releases instead of replacing an earlier pending tag.
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set release image names
+        env:
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          {
+            echo "IMAGE=ghcr.io/${REPOSITORY,,}"
+            echo "VERSION=$VERSION"
+            echo "TEST_IMAGE=paperless-gpt:e2e-${GITHUB_SHA}"
+          } >> "$GITHUB_ENV"
+      - name: Download the tested release image
+        uses: actions/download-artifact@v7
+        with:
+          name: fork-release-image-${{ github.sha }}
+          path: ${{ runner.temp }}
+      - name: Load and verify the tested release image
+        env:
+          EXPECTED_IMAGE_ID: ${{ needs.release-checks.outputs.image_id }}
+          EXPECTED_SOURCE: https://github.com/${{ github.repository }}
+        run: |
+          docker image load --input "$RUNNER_TEMP/fork-release-image.tar"
+          ACTUAL_IMAGE_ID=$(docker image inspect "$TEST_IMAGE" --format '{{.Id}}')
+          if [[ "$ACTUAL_IMAGE_ID" != "$EXPECTED_IMAGE_ID" ]]; then
+            echo "Release artifact image ID does not match the image verified by E2E" >&2
+            exit 1
+          fi
+          echo "TESTED_IMAGE_ID=$ACTUAL_IMAGE_ID" >> "$GITHUB_ENV"
+          [[ "$(docker image inspect "$TEST_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" == "$EXPECTED_SOURCE" ]]
+          [[ "$(docker image inspect "$TEST_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$GITHUB_SHA" ]]
+          [[ "$(docker image inspect "$TEST_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')" == "$VERSION" ]]
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify an existing version tag before resuming publication
+        run: |
+          manifest_is_missing() {
+            case "$1" in
+              *"manifest unknown"*|*"name unknown"*|*"no such manifest"*|*"404 Not Found"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          if docker manifest inspect "$IMAGE:$VERSION" > "$RUNNER_TEMP/version-manifest.txt" 2>&1; then
+            docker pull "$IMAGE:$VERSION"
+            PUBLISHED_IMAGE_ID=$(docker image inspect "$IMAGE:$VERSION" --format '{{.Id}}')
+            if [[ "$PUBLISHED_IMAGE_ID" != "$TESTED_IMAGE_ID" ]]; then
+              echo "Existing immutable tag $IMAGE:$VERSION is not the image verified by this release" >&2
+              exit 1
+            fi
+            echo "VERSION_ALREADY_PUBLISHED=true" >> "$GITHUB_ENV"
+            echo "Existing version tag matches the tested image; resuming latest publication"
+            exit 0
+          fi
+          if ! manifest_is_missing "$(<"$RUNNER_TEMP/version-manifest.txt")"; then
+            cat "$RUNNER_TEMP/version-manifest.txt" >&2
+            echo "Could not establish whether version tag $IMAGE:$VERSION exists" >&2
+            exit 1
+          fi
+          echo "VERSION_ALREADY_PUBLISHED=false" >> "$GITHUB_ENV"
+      - name: Decide whether latest can advance
+        id: latest
+        run: |
+          manifest_is_missing() {
+            case "$1" in
+              *"manifest unknown"*|*"name unknown"*|*"no such manifest"*|*"404 Not Found"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          if docker manifest inspect "$IMAGE:latest" > "$RUNNER_TEMP/latest-manifest.txt" 2>&1; then
+            docker pull "$IMAGE:latest"
+          elif manifest_is_missing "$(<"$RUNNER_TEMP/latest-manifest.txt")"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            cat "$RUNNER_TEMP/latest-manifest.txt" >&2
+            echo "Could not establish whether $IMAGE:latest exists" >&2
+            exit 1
+          fi
+
+          CURRENT_VERSION=$(docker image inspect "$IMAGE:latest" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')
+          if [[ ! "$CURRENT_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Current latest has no supported stable-version OCI label; refusing to move it" >&2
+            exit 1
+          fi
+
+          NEWEST_VERSION=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$VERSION" | sort -V | tail -n 1)
+          if [[ "$NEWEST_VERSION" == "$VERSION" && "$VERSION" != "$CURRENT_VERSION" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Keeping latest at newer version $CURRENT_VERSION"
+          fi
+      - name: Publish the tested version image
+        run: |
+          if [[ "$VERSION_ALREADY_PUBLISHED" == 'true' ]]; then
+            echo "Version tag is already published with the tested image"
+            exit 0
+          fi
+          docker tag "$TEST_IMAGE" "$IMAGE:$VERSION"
+          docker push "$IMAGE:$VERSION"
+      - name: Advance latest to the tested version image
+        if: steps.latest.outputs.publish == 'true'
+        run: |
+          docker tag "$TEST_IMAGE" "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+      - name: Print published image references
+        run: |
+          echo "Published immutable image: $IMAGE:$VERSION"
+          if [[ "${{ steps.latest.outputs.publish }}" == 'true' ]]; then
+            echo "Advanced latest to: $IMAGE:latest"
+          else
+            echo "latest remains on a newer stable release"
+          fi
