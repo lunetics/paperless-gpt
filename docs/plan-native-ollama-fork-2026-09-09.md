@@ -347,3 +347,33 @@ in neuen Diffs, Testfixtures und öffentlichen Beschreibungen.
 Routineentscheidungen werden autonom getroffen. Rückfragen sind nur nötig, wenn eine
 wesentliche, nicht aus Auftrag und Quellen ableitbare Entscheidung oder eine explizit
 geschützte Betriebsaktion ansteht. Technische Sandbox-Freigaben sind davon unabhängig.
+
+## Nachtrag — Generationseinstellungen pro Prompt
+
+Nach der ursprünglichen Planung wurde der Umfang um Ollama-Einstellungen für die
+Metadatengenerierung erweitert. Vorgesehen sind `LLM_MAX_TOKENS` als
+`num_predict`-Ausgabebudget, `OLLAMA_KEEP_ALIVE`, Thinking mit booleschen Werten
+oder den Stufen `low`, `medium`, `high` sowie eine optionale JSON-Datei mit
+Defaults und Einstellungen pro Prompt. Die Priorität lautet Modell/Basis,
+Datei-Defaults, gültige Umgebungswerte, Prompt-Einstellungen und schließlich
+explizite CallOptions. Vision OCR und Prompt-Templates bleiben außerhalb dieses
+Umfangs.
+
+`TOKEN_LIMIT` bleibt die bestehende Eingabekürzung. Es ist weder das
+Ausgabebudget noch das Ollama-Kontextfenster `num_ctx`; auch eine per-Prompt-
+`num_ctx`-Einstellung verändert die Eingabekürzung nicht automatisch. Format
+wird nicht allgemein aktiviert: Es ist ausschließlich für Custom Fields und
+Ad-hoc-Analyse vorgesehen, damit bestehende Text- und CSV-Verbraucher
+unverändert bleiben.
+
+**Stand der Verifikation:** Wire-Tests für die Prioritätsstufen, die strenge
+Validierung einer ausdrücklich gesetzten Settings-Datei und die vollständige
+Go-Prüfung sind bestanden. Diese Tests prüfen das Ollama-Protokoll mit Mocks,
+nicht die Qualität oder das tatsächliche Verhalten eines einzelnen Modells. Die
+Runtime- und Mock-E2E-Prüfung im Wegwerfcontainer ist bestanden: Das geprüfte
+Runtime-Image hatte die ID
+`sha256:b0d5b57d46f856c31e0e2fec93b38265c31f6a56c678c40c0cce667cd8edaef8`,
+und die Mock-E2E-Ausgabe `.last-run.json` meldete Erfolg. Der Nachweis bleibt
+Mock-/Protokollprüfung und ist kein Qualitätslauf gegen ein echtes Modell. Die
+Erweiterung ergänzt den bestehenden Upstream-PR; Prompt-Templates bleiben einer
+folgenden Änderung vorbehalten.
