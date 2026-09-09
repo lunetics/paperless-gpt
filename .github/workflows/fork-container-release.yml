@@ -155,6 +155,8 @@ jobs:
     # Do not let an older maintenance release move latest behind a newer one.
     concurrency:
       group: fork-ghcr-release
+      # Retain queued stable releases instead of replacing an earlier pending tag.
+      queue: max
       cancel-in-progress: false
     permissions:
       contents: read

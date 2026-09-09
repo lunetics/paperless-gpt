@@ -8,6 +8,14 @@ Mock-LLM-E2E-Prüfung und versieht es anschließend mit dem Versions-Tag. Der
 bewegliche Tag `latest` wird nur auf eine neuere stabile Version gesetzt.
 Bereits veröffentlichte Versions-Tags werden nicht überschrieben.
 
+Die Veröffentlichung läuft in einer gemeinsamen Actions-Concurrency-Gruppe mit
+`queue: max` und `cancel-in-progress: false`. Dadurch können bis zu 100
+Veröffentlichungen warten, ohne dass ein neuer Release einen bereits wartenden
+verdrängt. Oberhalb dieser GitHub-Grenze werden zusätzliche Jobs abgebrochen und
+müssen nachgeholt werden. Die Versionsprüfung für `latest` bleibt erforderlich,
+weil die Reihenfolge der abgeschlossenen Builds nicht der Versionsreihenfolge
+entsprechen muss. Siehe [GitHubs Concurrency-Dokumentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
 ## Containerprüfungen lokal ausführen
 
 Die Release-Prüfungen verwenden ausschließlich Wegwerf-Container. Vom

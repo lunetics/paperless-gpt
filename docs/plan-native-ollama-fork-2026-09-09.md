@@ -129,8 +129,12 @@ Vorgesehene Dateien: neu `ollama_metadata.go`, `ollama_metadata_test.go`; geziel
    direkt über die Options-Map übernehmen. `num_ctx` nur bei gültiger Konfiguration.
 6. Standardaufrufe senden ausdrücklich `Stream: &false`. Native Callback-Antworten
    sammeln, erfolgreiche vollständige Antwort prüfen und genau eine nutzbare Choice
-   zurückgeben. Ein leerer, abgebrochener oder ausschließlich denkender Response ist
-   ein Fehler statt eines Panics beim Zugriff auf `Choices[0]`.
+   zurückgeben. Abgebrochene Antworten sind Fehler statt eines Panics beim Zugriff
+   auf `Choices[0]`. Eine mit `done_reason: stop` vollständig beendete leere
+   Textantwort ist dagegen ein gültiger fehlender Vorschlag; der bestehende
+   Dokumenttyp-Prompt verlangt dies ausdrücklich, wenn kein Typ passt. Leere
+   Antworten ohne normalen Abschluss oder nach Erreichen des Tokenlimits bleiben
+   Fehler. Strukturierte Ausgaben müssen weiterhin gültiges JSON enthalten.
 7. `Message.Content` bildet das Antwortfeld. `Message.Thinking` niemals hineinmischen;
    gesammelt in `ContentChoice.ReasoningContent` zurückgeben. Dieses Feld existiert
    bereits in der gepinnten Schnittstelle; der Metadatenparser liest weiterhin nur
@@ -377,3 +381,34 @@ und die Mock-E2E-Ausgabe `.last-run.json` meldete Erfolg. Der Nachweis bleibt
 Mock-/Protokollprüfung und ist kein Qualitätslauf gegen ein echtes Modell. Die
 Erweiterung ergänzt den bestehenden Upstream-PR; Prompt-Templates bleiben einer
 folgenden Änderung vorbehalten.
+
+## Abschlussnachprüfung und spätere Ideen
+
+Die erste Veröffentlichung ist `v0.27.1`. Die anschließende Review-Prüfung
+bestätigte zwei Fehler im neuen Umfang: gültige leere Ollama-Antworten wurden
+abgewiesen, und eine gemeinsame Actions-Concurrency-Gruppe konnte wartende
+Releases verdrängen. Beide werden vor dem abschließenden Patch-Release korrigiert.
+Zusätzlich wird die bereits vorhandene Konfigurationsansicht abgesichert:
+`OLLAMA_HEADERS` kann Zugangsdaten enthalten und darf deshalb keinen Wert in
+`/api/config` ausgeben.
+
+Ein pauschaler neuer HTTP-Timeout wird nicht eingeführt. Der bestehende Vertrag
+lässt manuelle Vorschlagsjobs ohne `SUGGESTION_JOB_TIMEOUT_SECONDS` unbegrenzt
+laufen; gesetzte Deadlines und explizite Abbrüche werden bis zum nativen Client
+weitergereicht. Ein allgemeiner Timeout für alle LLM-Aufrufpfade wäre eine
+separate Änderung mit eigenem Konfigurationsvertrag.
+
+Der Fork-PR enthält außerdem ältere OCR-, Review-UI- und Einstellungsänderungen
+aus der Ausgangsbasis `72ddde7`. Deren zusätzliche Review-Hinweise sind keine
+Bestätigung einer vollständigen Fehlerfreiheit dieser älteren Funktionen und
+bleiben außerhalb des hier begrenzten Ollama-/Release-Abschlusses.
+
+Für später, ausdrücklich noch nicht implementieren:
+
+- Mehrere OCR-Anbieter pro Lauf vergleichen oder nacheinander einsetzen.
+- Bei fehlenden oder widersprüchlichen extrahierten Werten, etwa einem Datum,
+  gezielt einen weiteren Vision-OCR-Anbieter mit Bild und einer fachlichen Frage
+  hinzuziehen. Auslöser, verwendete Seiten, Herkunft des Ergebnisses und seine
+  Übernahme müssen dafür erst entworfen und anhand von Dokumenten geprüft werden.
+  Vom Modell behauptete Konfidenz allein ist noch kein zuverlässiger Auslöser.
+- Eigenständige Textnachkorrektur und Änderungen an Prompt-Templates.
