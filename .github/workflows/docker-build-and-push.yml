@@ -6,7 +6,6 @@ name: Build and Push Docker Images
 # gate.
 permissions:
   contents: read
-  packages: write # Push to GitHub Container Registry (push events only)
 
 on:
   push:
@@ -20,6 +19,7 @@ on:
 
 jobs:
   test:
+    if: github.repository == 'icereed/paperless-gpt'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -58,8 +58,12 @@ jobs:
         run: go test ./...
 
   build-amd64:
+    if: github.repository == 'icereed/paperless-gpt'
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: read
+      packages: write
     outputs:
       digest: ${{ steps.build_amd64.outputs.digest }}
       image_tag: ${{ steps.set_image_tag.outputs.image_tag }}
@@ -138,8 +142,12 @@ jobs:
           path: ${{ runner.temp }}/digests/digest-amd64.txt
 
   build-arm64:
+    if: github.repository == 'icereed/paperless-gpt'
     runs-on: ubuntu-24.04-arm
     needs: test
+    permissions:
+      contents: read
+      packages: write
     outputs:
       digest: ${{ steps.build_arm64.outputs.digest }}
     steps:
@@ -208,9 +216,12 @@ jobs:
           path: ${{ runner.temp }}/digests/digest-arm64.txt
 
   merge-manifests:
+    if: github.repository == 'icereed/paperless-gpt' && github.event_name != 'pull_request'
     needs: [build-amd64, build-arm64]
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
     env:
       DOCKERHUB_REPO: icereed/paperless-gpt
       GHCR_REPO: ghcr.io/${{ github.repository }}
@@ -309,7 +320,7 @@ jobs:
     name: E2E Tests (Mock LLM)
     # Full document-processing flow against a WireMock LLM — zero secrets, so
     # it runs automatically on every PR, fork or not. See web-app/e2e/mocks/.
-    if: github.event_name == 'pull_request'
+    if: github.repository == 'icereed/paperless-gpt' && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -361,7 +372,7 @@ jobs:
 
   check-llm-secrets:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: github.repository == 'icereed/paperless-gpt' && github.event_name == 'push'
     outputs:
       has_openai_key: ${{ steps.check.outputs.has_openai_key }}
     steps:
@@ -380,7 +391,10 @@ jobs:
     needs: [build-amd64, check-llm-secrets]
     # Runs with real LLM API keys on every push to main / tag as the final
     # safety net after merge. Skips cleanly on forks without keys configured.
-    if: needs.check-llm-secrets.outputs.has_openai_key == 'true'
+    if: github.repository == 'icereed/paperless-gpt' && needs.check-llm-secrets.outputs.has_openai_key == 'true'
+    permissions:
+      contents: read
+      packages: read
     runs-on: ubuntu-latest
     defaults:
       run:
