@@ -1004,6 +1004,8 @@ services:
 
 ## Contributing
 
+Fork maintainers can find the release, rollback, upstream-sync, and upstream-PR procedure in [Fork container maintenance](docs/fork-maintenance.md).
+
 **Pull requests** and **issues** are welcome!
 
 1. Fork the repo
